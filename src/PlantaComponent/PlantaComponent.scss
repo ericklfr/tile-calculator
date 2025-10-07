@@ -90,8 +90,8 @@
   min-height: calc(100vh - 120px);
   
   @media (min-width: 1024px) {
-    grid-template-columns: 400px 1fr;
-    max-width: 1400px;
+    grid-template-columns: 350px 1fr 350px;
+    max-width: 1800px;
     margin: 0 auto;
   }
 }
@@ -104,6 +104,55 @@
   height: fit-content;
   position: sticky;
   top: 2rem;
+}
+
+// Laminate panel (right side)
+.laminate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  height: fit-content;
+  position: sticky;
+  top: 2rem;
+  
+  .card {
+    height: fit-content;
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+  }
+  
+  .settings-section {
+    .setting-group {
+      .input-group {
+        margin-bottom: 0.75rem;
+        
+        .input-label {
+          font-size: 0.75rem;
+          color: var(--text-muted);
+          font-weight: 500;
+          margin-bottom: 0.25rem;
+          display: block;
+        }
+        
+        .input {
+          width: 100%;
+          padding: 0.5rem;
+          border: 1px solid var(--border);
+          border-radius: var(--radius-sm);
+          background: var(--surface);
+          color: var(--text-primary);
+          font-size: 0.875rem;
+          transition: var(--transition);
+          
+          &:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
+          }
+        }
+      }
+    }
+  }
 }
 
 // Card component
