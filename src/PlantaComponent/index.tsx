@@ -239,36 +239,41 @@ export default function PlantaInterativa(): JSX.Element {
                     <div key={w.id} className='wall-item'>
                       <div className='wall-number'>#{i + 1}</div>
                       <div className='wall-inputs'>
-                        <input
-                          className='input input-length'
-                          type='number'
-                          step='0.01'
-                          value={w.length}
-                          onChange={e =>
-                            updateWall(w.id, { length: Number(e.target.value) })
-                          }
-                          title='Comprimento (m)'
-                          placeholder='0.00'
-                        />
-                        <input
-                          className='input input-angle'
-                          type='number'
-                          step='1'
-                          value={w.angle}
-                          onChange={e => {
-                            let val = Number(e.target.value);
-                            if (orthogonal) {
-                              val = Math.round(val / 90) * 90;
+                        <div className='input-group'>
+                          <label className='input-label'>Comprimento (m)</label>
+                          <input
+                            className='input input-length'
+                            type='number'
+                            step='0.01'
+                            value={w.length}
+                            onChange={e =>
+                              updateWall(w.id, { length: Number(e.target.value) })
                             }
-                            updateWall(w.id, { angle: val });
-                          }}
-                          title='Ângulo (graus)'
-                          placeholder='0'
-                        />
-                        <span className='input-label'>m</span>
+                            title='Comprimento da parede em metros'
+                            placeholder='0.00'
+                          />
+                        </div>
+                        <div className='input-group'>
+                          <label className='input-label'>Ângulo (°)</label>
+                          <input
+                            className='input input-angle'
+                            type='number'
+                            step='1'
+                            value={w.angle}
+                            onChange={e => {
+                              let val = Number(e.target.value);
+                              if (orthogonal) {
+                                val = Math.round(val / 90) * 90;
+                              }
+                              updateWall(w.id, { angle: val });
+                            }}
+                            title='Ângulo da parede em graus (0° = direita, 90° = baixo)'
+                            placeholder='0'
+                          />
+                        </div>
                       </div>
                       <button
-                        className='btn btn-danger btn-sm'
+                        className='btn btn-danger btn-sm delete-btn'
                         onClick={() => removeWall(w.id)}
                         title='Remover parede'
                       >

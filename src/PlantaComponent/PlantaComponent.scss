@@ -39,11 +39,15 @@
     --text-primary: #f1f5f9;
     --text-secondary: #cbd5e1;
     --text-muted: #64748b;
+    --primary-light: #1e3a8a;
+    --info-bg: #1e3a8a;
+    --info-text: #f1f5f9;
   }
 }
 
 // Base styles
 .planta-container {
+  width: 100vw;
   min-height: 100vh;
   background: var(--background);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -81,12 +85,14 @@
   display: grid;
   grid-template-columns: 1fr;
   gap: 2rem;
-  padding: 2rem;
-  max-width: 1400px;
-  margin: 0 auto;
+  padding: 1rem;
+  width: 100%;
+  min-height: calc(100vh - 120px);
   
   @media (min-width: 1024px) {
     grid-template-columns: 400px 1fr;
+    max-width: 1400px;
+    margin: 0 auto;
   }
 }
 
@@ -333,10 +339,16 @@
 
 // Walls list
 .walls-section {
+  width: 100%;
+  overflow: hidden;
+  
   .walls-list {
     max-height: 60vh;
     overflow-y: auto;
+    overflow-x: hidden;
     padding-right: 0.5rem;
+    width: 100%;
+    box-sizing: border-box;
     
     &::-webkit-scrollbar {
       width: 6px;
@@ -359,7 +371,7 @@
   
   .wall-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 0.75rem;
     padding: 1rem;
     background: var(--surface);
@@ -367,6 +379,8 @@
     border-radius: var(--radius-md);
     margin-bottom: 0.75rem;
     transition: var(--transition);
+    width: 100%;
+    box-sizing: border-box;
     
     &:hover {
       border-color: var(--primary-color);
@@ -382,17 +396,35 @@
       font-size: 0.75rem;
       font-weight: 600;
       color: var(--text-muted);
-      min-width: 24px;
+      min-width: 32px;
       text-align: center;
       background: var(--border-light);
       padding: 0.25rem 0.5rem;
       border-radius: var(--radius-sm);
+      flex-shrink: 0;
     }
     
     .wall-inputs {
       display: flex;
-      gap: 0.5rem;
+      gap: 0.75rem;
       flex: 1;
+      align-items: flex-start;
+      min-width: 0;
+    }
+    
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      flex: 1;
+      min-width: 0;
+      
+      .input-label {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        font-weight: 500;
+        white-space: nowrap;
+      }
     }
     
     .input {
@@ -403,26 +435,20 @@
       color: var(--text-primary);
       font-size: 0.875rem;
       transition: var(--transition);
+      width: 100%;
+      box-sizing: border-box;
       
       &:focus {
         outline: none;
         border-color: var(--primary-color);
         box-shadow: 0 0 0 3px var(--primary-light);
       }
-      
-      &.input-length {
-        width: 80px;
-      }
-      
-      &.input-angle {
-        width: 100px;
-      }
     }
     
-    .input-label {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      align-self: center;
+    .delete-btn {
+      margin-left: auto;
+      flex-shrink: 0;
+      align-self: flex-start;
     }
   }
 }
@@ -436,6 +462,9 @@
     overflow: hidden;
     box-shadow: var(--shadow-md);
     position: relative;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     
     &::before {
       content: '';
@@ -454,6 +483,8 @@
       width: 100%;
       height: 600px;
       background: var(--surface);
+      max-width: 100%;
+      box-sizing: border-box;
     }
   }
   
@@ -497,6 +528,22 @@
 }
 
 // Responsive design
+@media (max-width: 1024px) {
+  .wall-item {
+    .wall-inputs {
+      gap: 0.5rem;
+      
+      .input-group {
+        min-width: 0;
+        
+        .input {
+          min-width: 0;
+        }
+      }
+    }
+  }
+}
+
 @media (max-width: 768px) {
   .planta-header {
     padding: 1rem;
@@ -507,8 +554,9 @@
   }
   
   .planta-main {
-    padding: 1rem;
+    padding: 0.5rem;
     gap: 1rem;
+    min-height: calc(100vh - 100px);
   }
   
   .control-panel {
@@ -526,15 +574,75 @@
   .wall-item {
     flex-direction: column;
     align-items: stretch;
-    gap: 0.5rem;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    width: 100%;
+    box-sizing: border-box;
     
     .wall-inputs {
-      justify-content: space-between;
+      flex-direction: column;
+      gap: 0.75rem;
+      width: 100%;
+      
+      .input-group {
+        width: 100%;
+        
+        .input {
+          width: 100% !important;
+          box-sizing: border-box;
+        }
+      }
+    }
+    
+    .delete-btn {
+      margin-left: 0;
+      align-self: flex-end;
     }
   }
   
   .visualization-section .svg-container svg {
-    height: 400px;
+    height: 300px;
+  }
+}
+
+@media (max-width: 480px) {
+  .planta-container {
+    min-height: 100vh;
+  }
+  
+  .planta-header {
+    padding: 0.75rem;
+    
+    h1 {
+      font-size: 1.25rem;
+    }
+    
+    .subtitle {
+      font-size: 0.875rem;
+    }
+  }
+  
+  .planta-main {
+    padding: 0.25rem;
+    gap: 0.75rem;
+  }
+  
+  .card {
+    .card-header {
+      padding: 1rem 1rem 0;
+      
+      h2 {
+        font-size: 1.125rem;
+      }
+    }
+    
+    .card-content {
+      padding: 1rem;
+    }
+  }
+  
+  .visualization-section .svg-container svg {
+    height: 250px;
   }
 }
 
