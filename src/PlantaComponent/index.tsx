@@ -12,6 +12,26 @@ type Wall = {
   angle: number; // graus, 0 = right, 90 = down
 };
 
+type LaminateConfig = {
+  boardLength: number; // comprimento da tábua em metros
+  boardWidth: number; // largura da tábua em metros
+  expansionGap: number; // distância de expansão em metros
+  minCutLength?: number; // comprimento mínimo de corte em metros
+  maxCutLength?: number; // comprimento máximo de corte em metros
+  rowJointOffset: number; // deslocamento das juntas em metros
+  installationDirection: 'horizontal' | 'vertical'; // direção de instalação
+};
+
+type LaminatePiece = {
+  id: string;
+  length: number;
+  width: number;
+  x: number;
+  y: number;
+  isCut: boolean;
+  originalLength?: number;
+};
+
 export default function PlantaInterativa(): JSX.Element {
   const [walls, setWalls] = useState<Wall[]>([
     { id: 'w1', length: 3.77, angle: 0 },
@@ -25,6 +45,19 @@ export default function PlantaInterativa(): JSX.Element {
   const [scaleMetersToPx, setScaleMetersToPx] = useState<number>(120); // pixels per meter
   const [orthogonal, setOrthogonal] = useState<boolean>(true);
   const [autoClose, setAutoClose] = useState<boolean>(false);
+  
+  // Laminate flooring configuration
+  const [laminateConfig, setLaminateConfig] = useState<LaminateConfig>({
+    boardLength: 1.2, // 120cm
+    boardWidth: 0.2, // 20cm
+    expansionGap: 0.01, // 1cm
+    minCutLength: 0.3, // 30cm
+    maxCutLength: 1.1, // 110cm
+    rowJointOffset: 0.4, // 40cm
+    installationDirection: 'horizontal'
+  });
+  
+  const [showLaminateSection, setShowLaminateSection] = useState<boolean>(false);
 
   const updateWall = (id: string, patch: Partial<Wall>) => {
     setWalls(prev => prev.map(w => (w.id === id ? { ...w, ...patch } : w)));
@@ -151,6 +184,264 @@ export default function PlantaInterativa(): JSX.Element {
     URL.revokeObjectURL(url);
   };
 
+  // Helper function to check if a point is inside the polygon
+  const isPointInPolygon = (x: number, y: number, polygon: Array<{x: number, y: number}>) => {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      if (((polygon[i].y > y) !== (polygon[j].y > y)) &&
+          (x < (polygon[j].x - polygon[i].x) * (y - polygon[i].y) / (polygon[j].y - polygon[i].y) + polygon[i].x)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
+  // Helper function to check if a rectangle is inside the polygon
+  const isRectangleInPolygon = (x: number, y: number, width: number, height: number, polygon: Array<{x: number, y: number}>) => {
+    // Check all four corners of the rectangle
+    const corners = [
+      { x, y },
+      { x: x + width, y },
+      { x, y: y + height },
+      { x: x + width, y: y + height }
+    ];
+    
+    // All corners must be inside the polygon
+    return corners.every(corner => isPointInPolygon(corner.x, corner.y, polygon));
+  };
+
+  // Calculate laminate flooring layout
+  const laminateLayout = useMemo(() => {
+    if (!showLaminateSection || points.length < 3) return [];
+    
+    // Create a polygon from the points with expansion gap
+    const polygon = points.map(p => ({
+      x: p.x,
+      y: p.y
+    }));
+    
+    // Calculate room dimensions for grid generation
+    const minX = Math.min(...points.map(p => p.x));
+    const maxX = Math.max(...points.map(p => p.x));
+    const minY = Math.min(...points.map(p => p.y));
+    const maxY = Math.max(...points.map(p => p.y));
+    
+    // Apply expansion gap to create the actual flooring area
+    const floorStartX = minX + laminateConfig.expansionGap;
+    const floorEndX = maxX - laminateConfig.expansionGap;
+    const floorStartY = minY + laminateConfig.expansionGap;
+    const floorEndY = maxY - laminateConfig.expansionGap;
+    
+    const pieces: LaminatePiece[] = [];
+    const { boardLength, boardWidth, rowJointOffset, installationDirection } = laminateConfig;
+    
+    if (installationDirection === 'horizontal') {
+      // Boards run parallel to room width (along X axis)
+      let row = 0;
+      let y = floorStartY;
+      
+      while (y < floorEndY) {
+        const isEvenRow = row % 2 === 0;
+        const offset = isEvenRow ? 0 : rowJointOffset;
+        
+        // Always start from the left edge
+        let currentX = floorStartX;
+        let col = 0;
+        
+        // If this row has an offset, we need to place a piece to fill the gap
+        if (!isEvenRow && offset > 0) {
+          // Place a piece from the left edge with the offset length
+          let offsetPieceLength = offset;
+          let isCut = true;
+          
+          // Check if this offset piece fits in the polygon
+          if (isRectangleInPolygon(currentX, y, offsetPieceLength, boardWidth, polygon)) {
+            // Check cut length limits
+            if (!laminateConfig.minCutLength || offsetPieceLength >= laminateConfig.minCutLength) {
+              if (laminateConfig.maxCutLength && offsetPieceLength > laminateConfig.maxCutLength) {
+                offsetPieceLength = laminateConfig.maxCutLength;
+              }
+              
+              pieces.push({
+                id: `piece-${row}-${col}`,
+                length: offsetPieceLength,
+                width: boardWidth,
+                x: currentX,
+                y,
+                isCut: true,
+                originalLength: boardLength
+              });
+              
+              currentX += offsetPieceLength;
+              col++;
+            }
+          }
+        }
+        
+        // Continue placing pieces from current position
+        while (currentX < floorEndX) {
+          let pieceLength = boardLength;
+          let isCut = false;
+          
+          // Check if piece extends beyond the floor boundary
+          if (currentX + boardLength > floorEndX) {
+            pieceLength = floorEndX - currentX;
+            isCut = true;
+          }
+          
+          // Check if the piece is inside the polygon
+          if (!isRectangleInPolygon(currentX, y, pieceLength, boardWidth, polygon)) {
+            // If piece is not inside, try to cut it to fit
+            let testLength = pieceLength;
+            while (testLength > 0.1 && !isRectangleInPolygon(currentX, y, testLength, boardWidth, polygon)) {
+              testLength -= 0.1;
+            }
+            
+            if (testLength <= 0.1) {
+              // Skip this piece if it can't fit
+              currentX += 0.1;
+              continue;
+            }
+            
+            pieceLength = testLength;
+            isCut = true;
+          }
+          
+          // Check cut length limits
+          if (laminateConfig.minCutLength && pieceLength < laminateConfig.minCutLength) {
+            currentX += 0.1;
+            continue;
+          }
+          if (laminateConfig.maxCutLength && pieceLength > laminateConfig.maxCutLength) {
+            pieceLength = laminateConfig.maxCutLength;
+            isCut = true;
+          }
+          
+          if (pieceLength > 0) {
+            pieces.push({
+              id: `piece-${row}-${col}`,
+              length: pieceLength,
+              width: boardWidth,
+              x: currentX,
+              y,
+              isCut,
+              originalLength: isCut ? boardLength : undefined
+            });
+          }
+          
+          currentX += pieceLength;
+          col++;
+        }
+        
+        y += boardWidth;
+        row++;
+      }
+    } else {
+      // Boards run parallel to room length (along Y axis)
+      let row = 0;
+      let x = floorStartX;
+      
+      while (x < floorEndX) {
+        const isEvenRow = row % 2 === 0;
+        const offset = isEvenRow ? 0 : rowJointOffset;
+        
+        // Always start from the top edge
+        let currentY = floorStartY;
+        let col = 0;
+        
+        // If this row has an offset, we need to place a piece to fill the gap
+        if (!isEvenRow && offset > 0) {
+          // Place a piece from the top edge with the offset length
+          let offsetPieceLength = offset;
+          let isCut = true;
+          
+          // Check if this offset piece fits in the polygon
+          if (isRectangleInPolygon(x, currentY, boardWidth, offsetPieceLength, polygon)) {
+            // Check cut length limits
+            if (!laminateConfig.minCutLength || offsetPieceLength >= laminateConfig.minCutLength) {
+              if (laminateConfig.maxCutLength && offsetPieceLength > laminateConfig.maxCutLength) {
+                offsetPieceLength = laminateConfig.maxCutLength;
+              }
+              
+              pieces.push({
+                id: `piece-${row}-${col}`,
+                length: offsetPieceLength,
+                width: boardWidth,
+                x,
+                y: currentY,
+                isCut: true,
+                originalLength: boardLength
+              });
+              
+              currentY += offsetPieceLength;
+              col++;
+            }
+          }
+        }
+        
+        // Continue placing pieces from current position
+        while (currentY < floorEndY) {
+          let pieceLength = boardLength;
+          let isCut = false;
+          
+          // Check if piece extends beyond the floor boundary
+          if (currentY + boardLength > floorEndY) {
+            pieceLength = floorEndY - currentY;
+            isCut = true;
+          }
+          
+          // Check if the piece is inside the polygon
+          if (!isRectangleInPolygon(x, currentY, boardWidth, pieceLength, polygon)) {
+            // If piece is not inside, try to cut it to fit
+            let testLength = pieceLength;
+            while (testLength > 0.1 && !isRectangleInPolygon(x, currentY, boardWidth, testLength, polygon)) {
+              testLength -= 0.1;
+            }
+            
+            if (testLength <= 0.1) {
+              // Skip this piece if it can't fit
+              currentY += 0.1;
+              continue;
+            }
+            
+            pieceLength = testLength;
+            isCut = true;
+          }
+          
+          // Check cut length limits
+          if (laminateConfig.minCutLength && pieceLength < laminateConfig.minCutLength) {
+            currentY += 0.1;
+            continue;
+          }
+          if (laminateConfig.maxCutLength && pieceLength > laminateConfig.maxCutLength) {
+            pieceLength = laminateConfig.maxCutLength;
+            isCut = true;
+          }
+          
+          if (pieceLength > 0) {
+            pieces.push({
+              id: `piece-${row}-${col}`,
+              length: pieceLength,
+              width: boardWidth,
+              x,
+              y: currentY,
+              isCut,
+              originalLength: isCut ? boardLength : undefined
+            });
+          }
+          
+          currentY += pieceLength;
+          col++;
+        }
+        
+        x += boardWidth;
+        row++;
+      }
+    }
+    
+    return pieces;
+  }, [showLaminateSection, points, laminateConfig]);
+
   return (
     <div className='planta-container'>
       <header className='planta-header'>
@@ -223,6 +514,12 @@ export default function PlantaInterativa(): JSX.Element {
                 >
                   📁 Exportar SVG
                 </button>
+                <button
+                  className={`btn ${showLaminateSection ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setShowLaminateSection(!showLaminateSection)}
+                >
+                  🏠 {showLaminateSection ? 'Ocultar' : 'Mostrar'} Piso Laminado
+                </button>
               </div>
             </div>
           </div>
@@ -285,6 +582,226 @@ export default function PlantaInterativa(): JSX.Element {
               </div>
             </div>
           </div>
+
+          {/* Laminate Configuration Card */}
+          {showLaminateSection && (
+            <div className='card'>
+              <div className='card-header'>
+                <h2>🏠 Configuração Piso Laminado</h2>
+              </div>
+              <div className='card-content'>
+                <div className='settings-section'>
+                  <div className='setting-group'>
+                    <div className='slider-group'>
+                      <div className='slider-label'>
+                        <span>Comprimento da Tábua (m)</span>
+                        <span>{laminateConfig.boardLength.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type='range'
+                        className='slider'
+                        min={0.5}
+                        max={2.0}
+                        step={0.1}
+                        value={laminateConfig.boardLength}
+                        onChange={e => setLaminateConfig(prev => ({
+                          ...prev,
+                          boardLength: Number(e.target.value)
+                        }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className='setting-group'>
+                    <div className='slider-group'>
+                      <div className='slider-label'>
+                        <span>Largura da Tábua (m)</span>
+                        <span>{laminateConfig.boardWidth.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type='range'
+                        className='slider'
+                        min={0.1}
+                        max={0.5}
+                        step={0.01}
+                        value={laminateConfig.boardWidth}
+                        onChange={e => setLaminateConfig(prev => ({
+                          ...prev,
+                          boardWidth: Number(e.target.value)
+                        }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className='setting-group'>
+                    <div className='slider-group'>
+                      <div className='slider-label'>
+                        <span>Distância de Expansão (m)</span>
+                        <span>{laminateConfig.expansionGap.toFixed(3)}</span>
+                      </div>
+                      <input
+                        type='range'
+                        className='slider'
+                        min={0.005}
+                        max={0.05}
+                        step={0.005}
+                        value={laminateConfig.expansionGap}
+                        onChange={e => setLaminateConfig(prev => ({
+                          ...prev,
+                          expansionGap: Number(e.target.value)
+                        }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className='setting-group'>
+                    <div className='slider-group'>
+                      <div className='slider-label'>
+                        <span>Deslocamento das Juntas (m)</span>
+                        <span>{laminateConfig.rowJointOffset.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type='range'
+                        className='slider'
+                        min={0.1}
+                        max={1.0}
+                        step={0.1}
+                        value={laminateConfig.rowJointOffset}
+                        onChange={e => setLaminateConfig(prev => ({
+                          ...prev,
+                          rowJointOffset: Number(e.target.value)
+                        }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className='setting-group'>
+                    <label className='setting-label'>
+                      <input
+                        type='checkbox'
+                        className='checkbox'
+                        checked={!!laminateConfig.minCutLength}
+                        onChange={e => setLaminateConfig(prev => ({
+                          ...prev,
+                          minCutLength: e.target.checked ? 0.3 : undefined
+                        }))}
+                      />
+                      <span>Usar comprimento mínimo de corte</span>
+                    </label>
+                    {laminateConfig.minCutLength && (
+                      <div className='slider-group'>
+                        <div className='slider-label'>
+                          <span>Comprimento mínimo (m)</span>
+                          <span>{laminateConfig.minCutLength.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type='range'
+                          className='slider'
+                          min={0.1}
+                          max={1.0}
+                          step={0.1}
+                          value={laminateConfig.minCutLength}
+                          onChange={e => setLaminateConfig(prev => ({
+                            ...prev,
+                            minCutLength: Number(e.target.value)
+                          }))}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className='setting-group'>
+                    <label className='setting-label'>
+                      <input
+                        type='checkbox'
+                        className='checkbox'
+                        checked={!!laminateConfig.maxCutLength}
+                        onChange={e => setLaminateConfig(prev => ({
+                          ...prev,
+                          maxCutLength: e.target.checked ? 1.1 : undefined
+                        }))}
+                      />
+                      <span>Usar comprimento máximo de corte</span>
+                    </label>
+                    {laminateConfig.maxCutLength && (
+                      <div className='slider-group'>
+                        <div className='slider-label'>
+                          <span>Comprimento máximo (m)</span>
+                          <span>{laminateConfig.maxCutLength.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type='range'
+                          className='slider'
+                          min={0.5}
+                          max={2.0}
+                          step={0.1}
+                          value={laminateConfig.maxCutLength}
+                          onChange={e => setLaminateConfig(prev => ({
+                            ...prev,
+                            maxCutLength: Number(e.target.value)
+                          }))}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className='setting-group'>
+                    <div className='slider-label'>
+                      <span>Direção de Instalação</span>
+                    </div>
+                    <div className='radio-group'>
+                      <label className='radio-label'>
+                        <input
+                          type='radio'
+                          name='installationDirection'
+                          value='horizontal'
+                          checked={laminateConfig.installationDirection === 'horizontal'}
+                          onChange={e => setLaminateConfig(prev => ({
+                            ...prev,
+                            installationDirection: e.target.value as 'horizontal' | 'vertical'
+                          }))}
+                        />
+                        <span>Horizontal (paralelo à largura)</span>
+                      </label>
+                      <label className='radio-label'>
+                        <input
+                          type='radio'
+                          name='installationDirection'
+                          value='vertical'
+                          checked={laminateConfig.installationDirection === 'vertical'}
+                          onChange={e => setLaminateConfig(prev => ({
+                            ...prev,
+                            installationDirection: e.target.value as 'horizontal' | 'vertical'
+                          }))}
+                        />
+                        <span>Vertical (paralelo ao comprimento)</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div className='laminate-stats'>
+                  <h3>📊 Estatísticas do Layout</h3>
+                  <div className='stats-grid'>
+                    <div className='stat-item'>
+                      <span className='stat-label'>Total de Peças:</span>
+                      <span className='stat-value'>{laminateLayout.length}</span>
+                    </div>
+                    <div className='stat-item'>
+                      <span className='stat-label'>Peças Cortadas:</span>
+                      <span className='stat-value'>{laminateLayout.filter(p => p.isCut).length}</span>
+                    </div>
+                    <div className='stat-item'>
+                      <span className='stat-label'>Área Total (m²):</span>
+                      <span className='stat-value'>
+                        {laminateLayout.reduce((sum, p) => sum + (p.length * p.width), 0).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </aside>
 
         {/* Visualization Section */}
@@ -409,6 +926,35 @@ export default function PlantaInterativa(): JSX.Element {
                       >
                         {lab.text}
                       </text>
+                    </g>
+                  ))}
+
+                  {/* Laminate Flooring Pieces */}
+                  {showLaminateSection && laminateLayout.map((piece) => (
+                    <g key={piece.id}>
+                      <rect
+                        x={m2px(piece.x)}
+                        y={m2px(piece.y)}
+                        width={m2px(piece.length)}
+                        height={m2px(piece.width)}
+                        fill={piece.isCut ? '#fbbf24' : '#10b981'}
+                        stroke={piece.isCut ? '#f59e0b' : '#059669'}
+                        strokeWidth={1}
+                        opacity={0.7}
+                      />
+                      {piece.isCut && (
+                        <text
+                          x={m2px(piece.x + piece.length / 2)}
+                          y={m2px(piece.y + piece.width / 2)}
+                          fontSize={8}
+                          textAnchor='middle'
+                          alignmentBaseline='middle'
+                          fill='#92400e'
+                          fontWeight='500'
+                        >
+                          {piece.length.toFixed(2)}m
+                        </text>
+                      )}
                     </g>
                   ))}
 
