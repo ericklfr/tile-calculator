@@ -20,6 +20,7 @@ type LaminateConfig = {
   maxCutLength?: number; // comprimento máximo de corte em metros
   rowJointOffset: number; // deslocamento das juntas em metros
   installationDirection: 'horizontal' | 'vertical'; // direção de instalação
+  startDirection: 'top-to-bottom' | 'bottom-to-top'; // direção de início
   symmetricCuts: boolean; // cortes simétricos dos dois lados
 };
 
@@ -56,6 +57,7 @@ export default function PlantaInterativa(): JSX.Element {
     maxCutLength: 1.1, // 110cm
     rowJointOffset: 0.4, // 40cm
     installationDirection: 'horizontal',
+    startDirection: 'top-to-bottom',
     symmetricCuts: false
   });
   
@@ -157,7 +159,7 @@ export default function PlantaInterativa(): JSX.Element {
       labels.push({
         x: mx,
         y: my,
-        text: `${walls[i].length.toFixed(2)} m,`,
+        text: `${walls[i].length.toFixed(2)} m`,
         angle: ang,
       });
     }
@@ -235,21 +237,25 @@ export default function PlantaInterativa(): JSX.Element {
     const floorEndY = maxY - laminateConfig.expansionGap;
     
     const pieces: LaminatePiece[] = [];
-    const { boardLength, boardWidth, rowJointOffset, installationDirection, symmetricCuts } = laminateConfig;
+    const { boardLength, boardWidth, rowJointOffset, installationDirection, startDirection, symmetricCuts } = laminateConfig;
     
     if (installationDirection === 'horizontal') {
       // Boards run parallel to room width (along X axis)
       let row = 0;
-      let y = floorStartY;
       let lastRowEndCut = 0; // Track the end cut length of the previous row
       
-      while (y < floorEndY) {
+      // Determine starting Y position based on start direction
+      let y = startDirection === 'top-to-bottom' ? floorStartY : floorEndY - boardWidth;
+      const yStep = startDirection === 'top-to-bottom' ? boardWidth : -boardWidth;
+      const yLimit = startDirection === 'top-to-bottom' ? floorEndY : floorStartY;
+      
+      while ((startDirection === 'top-to-bottom' && y < yLimit) || (startDirection === 'bottom-to-top' && y >= yLimit)) {
         const isEvenRow = row % 2 === 0;
         let offset = isEvenRow ? 0 : rowJointOffset;
         
-        // If symmetric cuts is enabled, use the end cut from previous row as offset
+        // If symmetric cuts is enabled, use the larger of the two: end cut from previous row or joint offset
         if (symmetricCuts && row > 0 && lastRowEndCut > 0) {
-          offset = lastRowEndCut;
+          offset = Math.max(lastRowEndCut, rowJointOffset);
         }
         
         // Always start from the left edge
@@ -290,6 +296,7 @@ export default function PlantaInterativa(): JSX.Element {
         // Continue placing pieces from current position
         while (currentX < floorEndX) {
           let pieceLength = boardLength;
+          let pieceWidth = boardWidth;
           let isCut = false;
           
           // Check if piece extends beyond the floor boundary
@@ -300,20 +307,45 @@ export default function PlantaInterativa(): JSX.Element {
           }
           
           // Check if the piece is inside the polygon
-          if (!isRectangleInPolygon(currentX, y, pieceLength, boardWidth, polygon)) {
-            // If piece is not inside, try to cut it to fit
+          if (!isRectangleInPolygon(currentX, y, pieceLength, pieceWidth, polygon)) {
+            // If piece is not inside, try to cut it to fit both length and width
             let testLength = pieceLength;
-            while (testLength > 0.1 && !isRectangleInPolygon(currentX, y, testLength, boardWidth, polygon)) {
+            let testWidth = pieceWidth;
+            
+            // First try cutting the length
+            while (testLength > 0.1 && !isRectangleInPolygon(currentX, y, testLength, testWidth, polygon)) {
               testLength -= 0.1;
             }
             
-            if (testLength <= 0.1) {
+            // If still doesn't fit, try cutting the width
+            if (testLength <= 0.1 || !isRectangleInPolygon(currentX, y, testLength, testWidth, polygon)) {
+              testLength = pieceLength; // Reset length
+              testWidth = pieceWidth;
+              while (testWidth > 0.05 && !isRectangleInPolygon(currentX, y, testLength, testWidth, polygon)) {
+                testWidth -= 0.05;
+              }
+            }
+            
+            // If still doesn't fit, try cutting both
+            if (testWidth <= 0.05 || !isRectangleInPolygon(currentX, y, testLength, testWidth, polygon)) {
+              testLength = pieceLength;
+              testWidth = pieceWidth;
+              while (testLength > 0.1 && testWidth > 0.05 && !isRectangleInPolygon(currentX, y, testLength, testWidth, polygon)) {
+                testLength -= 0.1;
+                if (!isRectangleInPolygon(currentX, y, testLength, testWidth, polygon)) {
+                  testWidth -= 0.05;
+                }
+              }
+            }
+            
+            if (testLength <= 0.1 || testWidth <= 0.05) {
               // Skip this piece if it can't fit
               currentX += 0.1;
               continue;
             }
             
             pieceLength = testLength;
+            pieceWidth = testWidth;
             isCut = true;
             
             // If this is the last piece in the row, store the cut length
@@ -332,11 +364,11 @@ export default function PlantaInterativa(): JSX.Element {
             isCut = true;
           }
           
-          if (pieceLength > 0) {
+          if (pieceLength > 0 && pieceWidth > 0) {
             pieces.push({
               id: `piece-${row}-${col}`,
               length: pieceLength,
-              width: boardWidth,
+              width: pieceWidth,
               x: currentX,
               y,
               isCut,
@@ -348,23 +380,122 @@ export default function PlantaInterativa(): JSX.Element {
           col++;
         }
         
+        // Check for vertical remnants (sobras verticais) - fill any remaining space
+        const remainingHeight = startDirection === 'top-to-bottom' 
+          ? floorEndY - (y + boardWidth)
+          : y - floorStartY;
+        
+        if (remainingHeight > 0.05) {
+          // There's a vertical remnant that can be used
+          const remnantY = startDirection === 'top-to-bottom' ? y + boardWidth : y - remainingHeight;
+          
+          // Try to place pieces in the remnant area
+          let remnantX = floorStartX;
+          let remnantCol = 0;
+          
+          while (remnantX < floorEndX) {
+            let remnantLength = boardLength;
+            let remnantWidth = remainingHeight;
+            let isRemnantCut = false;
+            
+            // Check if piece extends beyond the floor boundary
+            if (remnantX + boardLength > floorEndX) {
+              remnantLength = floorEndX - remnantX;
+              isRemnantCut = true;
+            }
+            
+            // Check if the piece is inside the polygon
+            if (!isRectangleInPolygon(remnantX, remnantY, remnantLength, remnantWidth, polygon)) {
+              // Try to cut the piece to fit
+              let testLength = remnantLength;
+              let testWidth = remnantWidth;
+              
+              // First try cutting the length
+              while (testLength > 0.1 && !isRectangleInPolygon(remnantX, remnantY, testLength, testWidth, polygon)) {
+                testLength -= 0.1;
+              }
+              
+              // If still doesn't fit, try cutting the width
+              if (testLength <= 0.1 || !isRectangleInPolygon(remnantX, remnantY, testLength, testWidth, polygon)) {
+                testLength = remnantLength; // Reset length
+                testWidth = remnantWidth;
+                while (testWidth > 0.05 && !isRectangleInPolygon(remnantX, remnantY, testLength, testWidth, polygon)) {
+                  testWidth -= 0.05;
+                }
+              }
+              
+              // If still doesn't fit, try cutting both
+              if (testWidth <= 0.05 || !isRectangleInPolygon(remnantX, remnantY, testLength, testWidth, polygon)) {
+                testLength = remnantLength;
+                testWidth = remnantWidth;
+                while (testLength > 0.1 && testWidth > 0.05 && !isRectangleInPolygon(remnantX, remnantY, testLength, testWidth, polygon)) {
+                  testLength -= 0.1;
+                  if (!isRectangleInPolygon(remnantX, remnantY, testLength, testWidth, polygon)) {
+                    testWidth -= 0.05;
+                  }
+                }
+              }
+              
+              if (testLength <= 0.1 || testWidth <= 0.05) {
+                remnantX += 0.1;
+                continue;
+              }
+              
+              remnantLength = testLength;
+              remnantWidth = testWidth;
+              isRemnantCut = true;
+            }
+            
+            // Check cut length limits
+            if (!laminateConfig.minCutLength || remnantLength >= laminateConfig.minCutLength) {
+              if (laminateConfig.maxCutLength && remnantLength > laminateConfig.maxCutLength) {
+                remnantLength = laminateConfig.maxCutLength;
+                isRemnantCut = true;
+              }
+              
+              if (remnantLength > 0 && remnantWidth > 0) {
+                pieces.push({
+                  id: `remnant-${row}-${remnantCol}`,
+                  length: remnantLength,
+                  width: remnantWidth,
+                  x: remnantX,
+                  y: remnantY,
+                  isCut: true,
+                  originalLength: boardLength
+                });
+                
+                remnantX += remnantLength;
+                remnantCol++;
+              } else {
+                remnantX += 0.1;
+              }
+            } else {
+              remnantX += 0.1;
+            }
+          }
+        }
+        
         lastRowEndCut = rowEndCut; // Store for next row
-        y += boardWidth;
+        y += yStep;
         row++;
       }
     } else {
       // Boards run parallel to room length (along Y axis)
       let row = 0;
-      let x = floorStartX;
       let lastRowEndCut = 0; // Track the end cut length of the previous row
       
-      while (x < floorEndX) {
+      // Determine starting X position based on start direction
+      let x = startDirection === 'top-to-bottom' ? floorStartX : floorEndX - boardWidth;
+      const xStep = startDirection === 'top-to-bottom' ? boardWidth : -boardWidth;
+      const xLimit = startDirection === 'top-to-bottom' ? floorEndX : floorStartX;
+      
+      while ((startDirection === 'top-to-bottom' && x < xLimit) || (startDirection === 'bottom-to-top' && x >= xLimit)) {
         const isEvenRow = row % 2 === 0;
         let offset = isEvenRow ? 0 : rowJointOffset;
         
-        // If symmetric cuts is enabled, use the end cut from previous row as offset
+        // If symmetric cuts is enabled, use the larger of the two: end cut from previous row or joint offset
         if (symmetricCuts && row > 0 && lastRowEndCut > 0) {
-          offset = lastRowEndCut;
+          offset = Math.max(lastRowEndCut, rowJointOffset);
         }
         
         // Always start from the top edge
@@ -405,6 +536,7 @@ export default function PlantaInterativa(): JSX.Element {
         // Continue placing pieces from current position
         while (currentY < floorEndY) {
           let pieceLength = boardLength;
+          let pieceWidth = boardWidth;
           let isCut = false;
           
           // Check if piece extends beyond the floor boundary
@@ -415,20 +547,45 @@ export default function PlantaInterativa(): JSX.Element {
           }
           
           // Check if the piece is inside the polygon
-          if (!isRectangleInPolygon(x, currentY, boardWidth, pieceLength, polygon)) {
-            // If piece is not inside, try to cut it to fit
+          if (!isRectangleInPolygon(x, currentY, pieceWidth, pieceLength, polygon)) {
+            // If piece is not inside, try to cut it to fit both length and width
             let testLength = pieceLength;
-            while (testLength > 0.1 && !isRectangleInPolygon(x, currentY, boardWidth, testLength, polygon)) {
+            let testWidth = pieceWidth;
+            
+            // First try cutting the length
+            while (testLength > 0.1 && !isRectangleInPolygon(x, currentY, testWidth, testLength, polygon)) {
               testLength -= 0.1;
             }
             
-            if (testLength <= 0.1) {
+            // If still doesn't fit, try cutting the width
+            if (testLength <= 0.1 || !isRectangleInPolygon(x, currentY, testWidth, testLength, polygon)) {
+              testLength = pieceLength; // Reset length
+              testWidth = pieceWidth;
+              while (testWidth > 0.05 && !isRectangleInPolygon(x, currentY, testWidth, testLength, polygon)) {
+                testWidth -= 0.05;
+              }
+            }
+            
+            // If still doesn't fit, try cutting both
+            if (testWidth <= 0.05 || !isRectangleInPolygon(x, currentY, testWidth, testLength, polygon)) {
+              testLength = pieceLength;
+              testWidth = pieceWidth;
+              while (testLength > 0.1 && testWidth > 0.05 && !isRectangleInPolygon(x, currentY, testWidth, testLength, polygon)) {
+                testLength -= 0.1;
+                if (!isRectangleInPolygon(x, currentY, testWidth, testLength, polygon)) {
+                  testWidth -= 0.05;
+                }
+              }
+            }
+            
+            if (testLength <= 0.1 || testWidth <= 0.05) {
               // Skip this piece if it can't fit
               currentY += 0.1;
               continue;
             }
             
             pieceLength = testLength;
+            pieceWidth = testWidth;
             isCut = true;
             
             // If this is the last piece in the row, store the cut length
@@ -447,11 +604,11 @@ export default function PlantaInterativa(): JSX.Element {
             isCut = true;
           }
           
-          if (pieceLength > 0) {
+          if (pieceLength > 0 && pieceWidth > 0) {
             pieces.push({
               id: `piece-${row}-${col}`,
               length: pieceLength,
-              width: boardWidth,
+              width: pieceWidth,
               x,
               y: currentY,
               isCut,
@@ -463,8 +620,103 @@ export default function PlantaInterativa(): JSX.Element {
           col++;
         }
         
+        // Check for horizontal remnants (sobras horizontais) - fill any remaining space
+        const remainingWidth = startDirection === 'top-to-bottom' 
+          ? floorEndX - (x + boardWidth)
+          : x - floorStartX;
+        
+        if (remainingWidth > 0.05) {
+          // There's a horizontal remnant that can be used
+          const remnantX = startDirection === 'top-to-bottom' ? x + boardWidth : x - remainingWidth;
+          
+          // Try to place pieces in the remnant area
+          let remnantY = floorStartY;
+          let remnantCol = 0;
+          
+          while (remnantY < floorEndY) {
+            let remnantLength = boardLength;
+            let remnantWidth = remainingWidth;
+            let isRemnantCut = false;
+            
+            // Check if piece extends beyond the floor boundary
+            if (remnantY + boardLength > floorEndY) {
+              remnantLength = floorEndY - remnantY;
+              isRemnantCut = true;
+            }
+            
+            // Check if the piece is inside the polygon
+            if (!isRectangleInPolygon(remnantX, remnantY, remnantWidth, remnantLength, polygon)) {
+              // Try to cut the piece to fit
+              let testLength = remnantLength;
+              let testWidth = remnantWidth;
+              
+              // First try cutting the length
+              while (testLength > 0.1 && !isRectangleInPolygon(remnantX, remnantY, testWidth, testLength, polygon)) {
+                testLength -= 0.1;
+              }
+              
+              // If still doesn't fit, try cutting the width
+              if (testLength <= 0.1 || !isRectangleInPolygon(remnantX, remnantY, testWidth, testLength, polygon)) {
+                testLength = remnantLength; // Reset length
+                testWidth = remnantWidth;
+                while (testWidth > 0.05 && !isRectangleInPolygon(remnantX, remnantY, testWidth, testLength, polygon)) {
+                  testWidth -= 0.05;
+                }
+              }
+              
+              // If still doesn't fit, try cutting both
+              if (testWidth <= 0.05 || !isRectangleInPolygon(remnantX, remnantY, testWidth, testLength, polygon)) {
+                testLength = remnantLength;
+                testWidth = remnantWidth;
+                while (testLength > 0.1 && testWidth > 0.05 && !isRectangleInPolygon(remnantX, remnantY, testWidth, testLength, polygon)) {
+                  testLength -= 0.1;
+                  if (!isRectangleInPolygon(remnantX, remnantY, testWidth, testLength, polygon)) {
+                    testWidth -= 0.05;
+                  }
+                }
+              }
+              
+              if (testLength <= 0.1 || testWidth <= 0.05) {
+                remnantY += 0.1;
+                continue;
+              }
+              
+              remnantLength = testLength;
+              remnantWidth = testWidth;
+              isRemnantCut = true;
+            }
+            
+            // Check cut length limits
+            if (!laminateConfig.minCutLength || remnantLength >= laminateConfig.minCutLength) {
+              if (laminateConfig.maxCutLength && remnantLength > laminateConfig.maxCutLength) {
+                remnantLength = laminateConfig.maxCutLength;
+                isRemnantCut = true;
+              }
+              
+              if (remnantLength > 0 && remnantWidth > 0) {
+                pieces.push({
+                  id: `remnant-${row}-${remnantCol}`,
+                  length: remnantLength,
+                  width: remnantWidth,
+                  x: remnantX,
+                  y: remnantY,
+                  isCut: true,
+                  originalLength: boardLength
+                });
+                
+                remnantY += remnantLength;
+                remnantCol++;
+              } else {
+                remnantY += 0.1;
+              }
+            } else {
+              remnantY += 0.1;
+            }
+          }
+        }
+        
         lastRowEndCut = rowEndCut; // Store for next row
-        x += boardWidth;
+        x += xStep;
         row++;
       }
     }
@@ -473,532 +725,555 @@ export default function PlantaInterativa(): JSX.Element {
   }, [showLaminateSection, points, laminateConfig]);
 
   return (
-    <div className='planta-container'>
-      <header className='planta-header'>
+    <div className="planta-container">
+      <header className="planta-header">
         <h1>Planta Interativa</h1>
-        <p className='subtitle'>Crie e visualize plantas 2D interativas com precisão</p>
+        <p className="subtitle">
+          Crie e visualize plantas 2D interativas com precisão
+        </p>
       </header>
 
-      <main className='planta-main'>
-        <aside className='control-panel'>
+      <main className="planta-main">
+        <aside className="control-panel">
           {/* Settings Card */}
-          <div className='card'>
-            <div className='card-header'>
+          <div className="card">
+            <div className="card-header">
               <h2>⚙️ Configurações</h2>
             </div>
-            <div className='card-content'>
-              <div className='settings-section'>
-                <div className='setting-group'>
-                  <label className='setting-label'>
-              <input
-                type='checkbox'
-                      className='checkbox'
-                checked={orthogonal}
-                onChange={e => setOrthogonal(e.target.checked)}
-              />
+            <div className="card-content">
+              <div className="settings-section">
+                <div className="setting-group">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      className="checkbox"
+                      checked={orthogonal}
+                      onChange={(e) => setOrthogonal(e.target.checked)}
+                    />
                     <span>Modo ortogonal (90°)</span>
-            </label>
+                  </label>
                 </div>
 
-                <div className='setting-group'>
-                  <label className='setting-label'>
-              <input
-                type='checkbox'
-                      className='checkbox'
-                checked={autoClose}
-                onChange={e => setAutoClose(e.target.checked)}
-              />
+                <div className="setting-group">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      className="checkbox"
+                      checked={autoClose}
+                      onChange={(e) => setAutoClose(e.target.checked)}
+                    />
                     <span>Fechamento automático</span>
-            </label>
+                  </label>
                 </div>
 
-                <div className='setting-group'>
-                  <div className='slider-group'>
-                    <div className='slider-label'>
+                <div className="setting-group">
+                  <div className="slider-group">
+                    <div className="slider-label">
                       <span>Escala</span>
                       <span>{scaleMetersToPx} px/m</span>
                     </div>
-              <input
-                type='range'
-                      className='slider'
-                min={20}
-                max={300}
-                value={scaleMetersToPx}
-                onChange={e => setScaleMetersToPx(Number(e.target.value))}
-              />
+                    <input
+                      type="range"
+                      className="slider"
+                      min={20}
+                      max={300}
+                      value={scaleMetersToPx}
+                      onChange={(e) =>
+                        setScaleMetersToPx(Number(e.target.value))
+                      }
+                    />
                   </div>
                 </div>
-            </div>
+              </div>
 
-              <div className='action-buttons'>
-              <button
-                  className='btn btn-primary'
-                onClick={addWall}
-              >
+              <div className="action-buttons">
+                <button className="btn btn-primary" onClick={addWall}>
                   <span>+</span>
                   Adicionar Parede
-              </button>
-              <button
-                  className='btn btn-secondary'
-                onClick={exportSVG}
-              >
+                </button>
+                <button className="btn btn-secondary" onClick={exportSVG}>
                   📁 Exportar SVG
                 </button>
                 <button
-                  className={`btn ${showLaminateSection ? 'btn-primary' : 'btn-secondary'}`}
+                  className={`btn ${
+                    showLaminateSection ? "btn-primary" : "btn-secondary"
+                  }`}
                   onClick={() => setShowLaminateSection(!showLaminateSection)}
                 >
-                  🏠 {showLaminateSection ? 'Ocultar' : 'Mostrar'} Piso Laminado
-              </button>
+                  🏠 {showLaminateSection ? "Ocultar" : "Mostrar"} Piso Laminado
+                </button>
               </div>
             </div>
           </div>
 
           {/* Walls List Card */}
-          <div className='card'>
-            <div className='card-header'>
+          <div className="card">
+            <div className="card-header">
               <h2>🧱 Paredes ({walls.length})</h2>
             </div>
-            <div className='card-content'>
-              <div className='walls-section'>
-                <div className='walls-list'>
-              {walls.map((w, i) => (
-                    <div key={w.id} className='wall-item'>
-                      <div className='wall-number'>#{i + 1}</div>
-                      <div className='wall-inputs'>
-                        <div className='input-group'>
-                          <label className='input-label'>Comprimento (m)</label>
-                  <input
-                            className='input input-length'
-                    type='number'
-                    step='0.01'
-                    value={w.length}
-                    onChange={e =>
-                      updateWall(w.id, { length: Number(e.target.value) })
-                    }
-                            title='Comprimento da parede em metros'
-                            placeholder='0.00'
-                  />
+            <div className="card-content">
+              <div className="walls-section">
+                <div className="walls-list">
+                  {walls.map((w, i) => (
+                    <div key={w.id} className="wall-item">
+                      <div className="wall-number">#{i + 1}</div>
+                      <div className="wall-inputs">
+                        <div className="input-group">
+                          <label className="input-label">Comprimento (m)</label>
+                          <input
+                            className="input input-length"
+                            type="number"
+                            step="0.01"
+                            value={w.length}
+                            onChange={(e) =>
+                              updateWall(w.id, {
+                                length: Number(e.target.value),
+                              })
+                            }
+                            title="Comprimento da parede em metros"
+                            placeholder="0.00"
+                          />
                         </div>
-                        <div className='input-group'>
-                          <label className='input-label'>Ângulo (°)</label>
-                  <input
-                            className='input input-angle'
-                    type='number'
-                    step='1'
-                    value={w.angle}
-                    onChange={e => {
-                      let val = Number(e.target.value);
-                      if (orthogonal) {
-                        val = Math.round(val / 90) * 90;
-                      }
-                      updateWall(w.id, { angle: val });
-                    }}
-                            title='Ângulo da parede em graus (0° = direita, 90° = baixo)'
-                            placeholder='0'
-                  />
+                        <div className="input-group">
+                          <label className="input-label">Ângulo (°)</label>
+                          <input
+                            className="input input-angle"
+                            type="number"
+                            step="1"
+                            value={w.angle}
+                            onChange={(e) => {
+                              let val = Number(e.target.value);
+                              if (orthogonal) {
+                                val = Math.round(val / 90) * 90;
+                              }
+                              updateWall(w.id, { angle: val });
+                            }}
+                            title="Ângulo da parede em graus (0° = direita, 90° = baixo)"
+                            placeholder="0"
+                          />
                         </div>
                       </div>
-                  <button
-                        className='btn btn-danger btn-sm delete-btn'
-                    onClick={() => removeWall(w.id)}
-                        title='Remover parede'
-                  >
+                      <button
+                        className="btn btn-danger btn-sm delete-btn"
+                        onClick={() => removeWall(w.id)}
+                        title="Remover parede"
+                      >
                         🗑️
-                  </button>
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
             </div>
           </div>
-        </div>
-
         </aside>
 
-         {/* Visualization Section */}
-         <section className='visualization-section'>
-          <div className='card'>
-            <div className='card-header'>
+        {/* Visualization Section */}
+        <section className="visualization-section">
+          <div className="card">
+            <div className="card-header">
               <h2>📐 Visualização</h2>
             </div>
-            <div className='card-content'>
-              <div className='svg-container'>
-              <svg
-                xmlns='http://www.w3.org/2000/svg'
-                width='100%'
-                height='600'
-                viewBox={`${m2px(bbox.minX)} ${m2px(bbox.minY)} ${m2px(
-                  bbox.maxX - bbox.minX
-                )} ${m2px(bbox.maxY - bbox.minY)}`}
-              >
+            <div className="card-content">
+              <div className="svg-container">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="100%"
+                  height="600"
+                  viewBox={`${m2px(bbox.minX)} ${m2px(bbox.minY)} ${m2px(
+                    bbox.maxX - bbox.minX
+                  )} ${m2px(bbox.maxY - bbox.minY)}`}
+                >
                   {/* Grid Pattern */}
-                <defs>
-                  <pattern
-                    id='smallGrid'
-                    width={m2px(0.5)}
-                    height={m2px(0.5)}
-                    patternUnits='userSpaceOnUse'
-                  >
-                    <path
-                      d={`M ${m2px(bbox.minX)} ${m2px(bbox.minY)} h ${m2px(
-                        0.5
-                      )} v ${m2px(0.5)}`}
-                      fill='none'
-                        stroke='#e2e8f0'
-                      strokeWidth={0.5}
-                    />
-                  </pattern>
+                  <defs>
                     <pattern
-                      id='largeGrid'
+                      id="smallGrid"
+                      width={m2px(0.5)}
+                      height={m2px(0.5)}
+                      patternUnits="userSpaceOnUse"
+                    >
+                      <path
+                        d={`M ${m2px(bbox.minX)} ${m2px(bbox.minY)} h ${m2px(
+                          0.5
+                        )} v ${m2px(0.5)}`}
+                        fill="none"
+                        stroke="#e2e8f0"
+                        strokeWidth={0.5}
+                      />
+                    </pattern>
+                    <pattern
+                      id="largeGrid"
                       width={m2px(2)}
                       height={m2px(2)}
-                      patternUnits='userSpaceOnUse'
+                      patternUnits="userSpaceOnUse"
                     >
                       <rect
                         width={m2px(2)}
                         height={m2px(2)}
-                        fill='url(#smallGrid)'
+                        fill="url(#smallGrid)"
                       />
                       <path
                         d={`M ${m2px(bbox.minX)} ${m2px(bbox.minY)} h ${m2px(
                           2
                         )} v ${m2px(2)}`}
-                        fill='none'
-                        stroke='#cbd5e1'
+                        fill="none"
+                        stroke="#cbd5e1"
                         strokeWidth={1}
-                    />
-                  </pattern>
-                </defs>
+                      />
+                    </pattern>
+                  </defs>
 
                   {/* Background Grid */}
-                <rect
-                  x={m2px(bbox.minX)}
-                  y={m2px(bbox.minY)}
-                  width={m2px(bbox.maxX - bbox.minX)}
-                  height={m2px(bbox.maxY - bbox.minY)}
-                    fill='url(#largeGrid)'
-                />
+                  <rect
+                    x={m2px(bbox.minX)}
+                    y={m2px(bbox.minY)}
+                    width={m2px(bbox.maxX - bbox.minX)}
+                    height={m2px(bbox.maxY - bbox.minY)}
+                    fill="url(#largeGrid)"
+                  />
 
                   {/* Floor Plan Path */}
-                <path
-                  d={svgPath}
-                    stroke='#1e293b'
+                  <path
+                    d={svgPath}
+                    stroke="#1e293b"
                     strokeWidth={Math.max(2, scaleMetersToPx * 0.015)}
-                    fill='rgba(59, 130, 246, 0.1)'
-                    strokeLinecap='round'
-                    strokeLinejoin='round'
+                    fill="rgba(59, 130, 246, 0.1)"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                   />
 
                   {/* Wall Segments */}
-                {points.slice(0, -1).map((p, i) => {
-                  const q = points[i + 1];
-                  if (!q) return null;
-                  return (
-                    <line
-                      key={i}
-                      x1={m2px(p.x)}
-                      y1={m2px(p.y)}
-                      x2={m2px(q.x)}
-                      y2={m2px(q.y)}
-                        stroke='#3b82f6'
+                  {points.slice(0, -1).map((p, i) => {
+                    const q = points[i + 1];
+                    if (!q) return null;
+                    return (
+                      <line
+                        key={i}
+                        x1={m2px(p.x)}
+                        y1={m2px(p.y)}
+                        x2={m2px(q.x)}
+                        y2={m2px(q.y)}
+                        stroke="#3b82f6"
                         strokeWidth={Math.max(3, scaleMetersToPx * 0.025)}
-                        strokeLinecap='round'
-                    />
-                  );
-                })}
+                        strokeLinecap="round"
+                      />
+                    );
+                  })}
 
                   {/* Wall Labels */}
-                {wallLabels.map((lab, i) => (
-                  <g
-                    key={i}
-                    transform={`translate(${m2px(lab.x)}, ${m2px(
-                      lab.y
-                    )}) rotate(${lab.angle})`}
-                  >
-                    <rect
-                        x={-35}
-                        y={-12}
-                        width={70}
-                        height={20}
-                        rx={10}
-                        fill='rgba(255, 255, 255, 0.95)'
-                        stroke='#3b82f6'
-                        strokeWidth={1}
-                        filter='drop-shadow(0 2px 4px rgba(0,0,0,0.1))'
-                    />
-                    <text
-                      x={0}
-                        y={2}
-                        fontSize={11}
-                      textAnchor='middle'
-                      alignmentBaseline='middle'
-                        fill='#1e293b'
-                        fontWeight='500'
+                  {wallLabels.map((lab, i) => (
+                    <g
+                      key={i}
+                      transform={`translate(${m2px(lab.x)}, ${m2px(
+                        lab.y
+                      )}) rotate(${lab.angle})`}
                     >
-                      {lab.text}
-                    </text>
-                  </g>
-                ))}
-
-                  {/* Laminate Flooring Pieces */}
-                  {showLaminateSection && laminateLayout.map((piece) => (
-                    <g key={piece.id}>
-                      <rect
-                        x={m2px(piece.x)}
-                        y={m2px(piece.y)}
-                        width={m2px(piece.length)}
-                        height={m2px(piece.width)}
-                        fill={piece.isCut ? '#fbbf24' : '#10b981'}
-                        stroke={piece.isCut ? '#f59e0b' : '#059669'}
-                        strokeWidth={1}
-                        opacity={0.7}
-                      />
-                      {piece.isCut && (
-                        <text
-                          x={m2px(piece.x + piece.length / 2)}
-                          y={m2px(piece.y + piece.width / 2)}
-                          fontSize={8}
-                          textAnchor='middle'
-                          alignmentBaseline='middle'
-                          fill='#92400e'
-                          fontWeight='500'
-                        >
-                          {piece.length.toFixed(2)}m
-                        </text>
-                      )}
+                      <text
+                        x={0}
+                        y={-10}
+                        fontSize={11}
+                        textAnchor="middle"
+                        alignmentBaseline="middle"
+                        fill="#ffffff"
+                        fontWeight="500"
+                      >
+                        {lab.text}
+                      </text>
                     </g>
                   ))}
 
-                  {/* Connection Points */}
-                {points.map((p, i) => (
-                  <g key={`n${i}`}>
-                    <circle
-                      cx={m2px(p.x)}
-                      cy={m2px(p.y)}
-                        r={Math.max(4, scaleMetersToPx * 0.015)}
-                      fill='#ef4444'
-                        stroke='white'
-                        strokeWidth={2}
-                        filter='drop-shadow(0 2px 4px rgba(0,0,0,0.2))'
-                      />
-                      <text
-                        x={m2px(p.x) + 8}
-                        y={m2px(p.y) - 8}
-                        fontSize={10}
-                        fill='#64748b'
-                        fontWeight='500'
-                      >
-                        {`(${p.x.toFixed(2)}, ${p.y.toFixed(2)})`}
-                    </text>
-                  </g>
-                ))}
-              </svg>
-            </div>
+                  {/* Laminate Flooring Pieces */}
+                  {showLaminateSection &&
+                    laminateLayout.map((piece) => (
+                      <g key={piece.id}>
+                        <rect
+                          x={m2px(piece.x)}
+                          y={m2px(piece.y)}
+                          width={m2px(piece.length)}
+                          height={m2px(piece.width)}
+                          fill={piece.isCut ? "#fbbf24" : "#10b981"}
+                          stroke={piece.isCut ? "#f59e0b" : "#059669"}
+                          strokeWidth={1}
+                          opacity={0.7}
+                        />
+                        {piece.isCut && (
+                          <text
+                            x={m2px(piece.x + piece.length / 2)}
+                            y={m2px(piece.y + piece.width / 2)}
+                            fontSize={8}
+                            textAnchor="middle"
+                            alignmentBaseline="middle"
+                            fill="#92400e"
+                            fontWeight="500"
+                          >
+                            {piece.length.toFixed(2)}m
+                          </text>
+                        )}
+                      </g>
+                    ))}
 
-              <div className='info-text'>
-                <strong>💡 Dicas:</strong> Use o modo ortogonal para criar plantas com cantos retos. 
-                O fechamento automático ajusta a última parede para formar um polígono fechado. 
-                Ajuste a escala para melhor visualização.
+                  {/* Connection Points */}
+                  {points.map((p, i) => {
+                    if (i !== points.length - 1) {
+                      return (
+                        <g key={`n${i}`}>
+                          <circle
+                            cx={m2px(p.x)}
+                            cy={m2px(p.y)}
+                            r={Math.max(4, scaleMetersToPx * 0.015)}
+                            fill="#ef4444"
+                            stroke="white"
+                            strokeWidth={2}
+                            filter="drop-shadow(0 2px 4px rgba(0,0,0,0.2))"
+                          />
+                        </g>
+                      );
+                    }
+                    return null;
+                  })}
+                </svg>
+              </div>
+
+              <div className="info-text">
+                <strong>💡 Dicas:</strong> Use o modo ortogonal para criar
+                plantas com cantos retos. O fechamento automático ajusta a
+                última parede para formar um polígono fechado. Ajuste a escala
+                para melhor visualização.
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
         </section>
 
         {/* Laminate Configuration Panel - Right Side */}
         {showLaminateSection && (
-          <aside className='laminate-panel'>
-            <div className='card'>
-              <div className='card-header'>
+          <aside className="laminate-panel">
+            <div className="card">
+              <div className="card-header">
                 <h2>🏠 Configuração Piso Laminado</h2>
               </div>
-              <div className='card-content'>
-                <div className='settings-section'>
-                  <div className='setting-group'>
-                    <div className='input-group'>
-                      <label className='input-label'>Comprimento da Tábua (cm)</label>
+              <div className="card-content">
+                <div className="settings-section">
+                  <div className="setting-group">
+                    <div className="input-group">
+                      <label className="input-label">
+                        Comprimento da Tábua (cm)
+                      </label>
                       <input
-                        type='number'
-                        className='input'
+                        type="number"
+                        className="input"
                         value={Math.round(laminateConfig.boardLength * 100)}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          boardLength: Number(e.target.value) / 100
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            boardLength: Number(e.target.value) / 100,
+                          }))
+                        }
                         step={1}
                         min={50}
                         max={200}
                       />
                     </div>
-                    <div className='slider-group'>
-                      <div className='slider-label'>
+                    <div className="slider-group">
+                      <div className="slider-label">
                         <span>Comprimento (m)</span>
                         <span>{laminateConfig.boardLength.toFixed(2)}</span>
                       </div>
                       <input
-                        type='range'
-                        className='slider'
+                        type="range"
+                        className="slider"
                         min={0.5}
                         max={2.0}
                         step={0.1}
                         value={laminateConfig.boardLength}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          boardLength: Number(e.target.value)
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            boardLength: Number(e.target.value),
+                          }))
+                        }
                       />
                     </div>
                   </div>
 
-                  <div className='setting-group'>
-                    <div className='input-group'>
-                      <label className='input-label'>Largura da Tábua (cm)</label>
+                  <div className="setting-group">
+                    <div className="input-group">
+                      <label className="input-label">
+                        Largura da Tábua (cm)
+                      </label>
                       <input
-                        type='number'
-                        className='input'
+                        type="number"
+                        className="input"
                         value={Math.round(laminateConfig.boardWidth * 100)}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          boardWidth: Number(e.target.value) / 100
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            boardWidth: Number(e.target.value) / 100,
+                          }))
+                        }
                         step={1}
                         min={10}
                         max={50}
                       />
                     </div>
-                    <div className='slider-group'>
-                      <div className='slider-label'>
+                    <div className="slider-group">
+                      <div className="slider-label">
                         <span>Largura (m)</span>
                         <span>{laminateConfig.boardWidth.toFixed(2)}</span>
                       </div>
                       <input
-                        type='range'
-                        className='slider'
+                        type="range"
+                        className="slider"
                         min={0.1}
                         max={0.5}
                         step={0.01}
                         value={laminateConfig.boardWidth}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          boardWidth: Number(e.target.value)
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            boardWidth: Number(e.target.value),
+                          }))
+                        }
                       />
                     </div>
                   </div>
 
-                  <div className='setting-group'>
-                    <div className='input-group'>
-                      <label className='input-label'>Gap de Expansão (cm)</label>
+                  <div className="setting-group">
+                    <div className="input-group">
+                      <label className="input-label">
+                        Gap de Expansão (cm)
+                      </label>
                       <input
-                        type='number'
-                        className='input'
+                        type="number"
+                        className="input"
                         value={Math.round(laminateConfig.expansionGap * 100)}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          expansionGap: Number(e.target.value) / 100
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            expansionGap: Number(e.target.value) / 100,
+                          }))
+                        }
                         step={0.1}
                         min={0.5}
                         max={5}
                       />
                     </div>
-                    <div className='slider-group'>
-                      <div className='slider-label'>
+                    <div className="slider-group">
+                      <div className="slider-label">
                         <span>Gap de Expansão (m)</span>
                         <span>{laminateConfig.expansionGap.toFixed(3)}</span>
                       </div>
                       <input
-                        type='range'
-                        className='slider'
+                        type="range"
+                        className="slider"
                         min={0.005}
                         max={0.05}
                         step={0.005}
                         value={laminateConfig.expansionGap}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          expansionGap: Number(e.target.value)
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            expansionGap: Number(e.target.value),
+                          }))
+                        }
                       />
                     </div>
                   </div>
 
-                  <div className='setting-group'>
-                    <div className='input-group'>
-                      <label className='input-label'>Deslocamento das Juntas (cm)</label>
+                  <div className="setting-group">
+                    <div className="input-group">
+                      <label className="input-label">
+                        Deslocamento das Juntas (cm)
+                      </label>
                       <input
-                        type='number'
-                        className='input'
+                        type="number"
+                        className="input"
                         value={Math.round(laminateConfig.rowJointOffset * 100)}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          rowJointOffset: Number(e.target.value) / 100
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            rowJointOffset: Number(e.target.value) / 100,
+                          }))
+                        }
                         step={1}
                         min={10}
                         max={100}
                       />
                     </div>
-                    <div className='slider-group'>
-                      <div className='slider-label'>
+                    <div className="slider-group">
+                      <div className="slider-label">
                         <span>Deslocamento das Juntas (m)</span>
                         <span>{laminateConfig.rowJointOffset.toFixed(2)}</span>
                       </div>
                       <input
-                        type='range'
-                        className='slider'
+                        type="range"
+                        className="slider"
                         min={0.1}
                         max={1.0}
                         step={0.1}
                         value={laminateConfig.rowJointOffset}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          rowJointOffset: Number(e.target.value)
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            rowJointOffset: Number(e.target.value),
+                          }))
+                        }
                       />
                     </div>
                   </div>
 
-                  <div className='setting-group'>
-                    <label className='setting-label'>
+                  <div className="setting-group">
+                    <label className="setting-label">
                       <input
-                        type='checkbox'
-                        className='checkbox'
+                        type="checkbox"
+                        className="checkbox"
                         checked={laminateConfig.symmetricCuts}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          symmetricCuts: e.target.checked
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            symmetricCuts: e.target.checked,
+                          }))
+                        }
                       />
                       <span>Cortes Simétricos</span>
                     </label>
-                    <div className='info-text'>
-                      Quando ativado, o corte do final de uma linha será usado como offset no início da próxima linha
+                    <div className="info-text">
+                      Quando ativado, o corte do final de uma linha será usado
+                      como offset no início da próxima linha. Se o deslocamento
+                      das juntas for maior, ele será usado em vez do corte
+                      simétrico.
                     </div>
                   </div>
 
-                  <div className='setting-group'>
-                    <label className='setting-label'>
+                  <div className="setting-group">
+                    <label className="setting-label">
                       <input
-                        type='checkbox'
-                        className='checkbox'
+                        type="checkbox"
+                        className="checkbox"
                         checked={!!laminateConfig.minCutLength}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          minCutLength: e.target.checked ? 0.3 : undefined
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            minCutLength: e.target.checked ? 0.3 : undefined,
+                          }))
+                        }
                       />
                       <span>Usar comprimento mínimo de corte</span>
                     </label>
                     {laminateConfig.minCutLength && (
-                      <div className='input-group'>
-                        <label className='input-label'>Comprimento mínimo (cm)</label>
+                      <div className="input-group">
+                        <label className="input-label">
+                          Comprimento mínimo (cm)
+                        </label>
                         <input
-                          type='number'
-                          className='input'
+                          type="number"
+                          className="input"
                           value={Math.round(laminateConfig.minCutLength * 100)}
-                          onChange={e => setLaminateConfig(prev => ({
-                            ...prev,
-                            minCutLength: Number(e.target.value) / 100
-                          }))}
+                          onChange={(e) =>
+                            setLaminateConfig((prev) => ({
+                              ...prev,
+                              minCutLength: Number(e.target.value) / 100,
+                            }))
+                          }
                           step={1}
                           min={10}
                           max={80}
@@ -1007,30 +1282,36 @@ export default function PlantaInterativa(): JSX.Element {
                     )}
                   </div>
 
-                  <div className='setting-group'>
-                    <label className='setting-label'>
+                  <div className="setting-group">
+                    <label className="setting-label">
                       <input
-                        type='checkbox'
-                        className='checkbox'
+                        type="checkbox"
+                        className="checkbox"
                         checked={!!laminateConfig.maxCutLength}
-                        onChange={e => setLaminateConfig(prev => ({
-                          ...prev,
-                          maxCutLength: e.target.checked ? 1.1 : undefined
-                        }))}
+                        onChange={(e) =>
+                          setLaminateConfig((prev) => ({
+                            ...prev,
+                            maxCutLength: e.target.checked ? 1.1 : undefined,
+                          }))
+                        }
                       />
                       <span>Usar comprimento máximo de corte</span>
                     </label>
                     {laminateConfig.maxCutLength && (
-                      <div className='input-group'>
-                        <label className='input-label'>Comprimento máximo (cm)</label>
+                      <div className="input-group">
+                        <label className="input-label">
+                          Comprimento máximo (cm)
+                        </label>
                         <input
-                          type='number'
-                          className='input'
+                          type="number"
+                          className="input"
                           value={Math.round(laminateConfig.maxCutLength * 100)}
-                          onChange={e => setLaminateConfig(prev => ({
-                            ...prev,
-                            maxCutLength: Number(e.target.value) / 100
-                          }))}
+                          onChange={(e) =>
+                            setLaminateConfig((prev) => ({
+                              ...prev,
+                              maxCutLength: Number(e.target.value) / 100,
+                            }))
+                          }
                           step={1}
                           min={50}
                           max={200}
@@ -1039,56 +1320,126 @@ export default function PlantaInterativa(): JSX.Element {
                     )}
                   </div>
 
-                  <div className='setting-group'>
-                    <div className='slider-label'>
+                  <div className="setting-group">
+                    <div className="slider-label">
                       <span>Direção de Instalação</span>
                     </div>
-                    <div className='radio-group'>
-                      <label className='radio-label'>
+                    <div className="radio-group">
+                      <label className="radio-label">
                         <input
-                          type='radio'
-                          name='installationDirection'
-                          value='horizontal'
-                          checked={laminateConfig.installationDirection === 'horizontal'}
-                          onChange={e => setLaminateConfig(prev => ({
-                            ...prev,
-                            installationDirection: e.target.value as 'horizontal' | 'vertical'
-                          }))}
+                          type="radio"
+                          name="installationDirection"
+                          value="horizontal"
+                          checked={
+                            laminateConfig.installationDirection ===
+                            "horizontal"
+                          }
+                          onChange={(e) =>
+                            setLaminateConfig((prev) => ({
+                              ...prev,
+                              installationDirection: e.target.value as
+                                | "horizontal"
+                                | "vertical",
+                            }))
+                          }
                         />
                         <span>Horizontal (paralelo à largura)</span>
                       </label>
-                      <label className='radio-label'>
+                      <label className="radio-label">
                         <input
-                          type='radio'
-                          name='installationDirection'
-                          value='vertical'
-                          checked={laminateConfig.installationDirection === 'vertical'}
-                          onChange={e => setLaminateConfig(prev => ({
-                            ...prev,
-                            installationDirection: e.target.value as 'horizontal' | 'vertical'
-                          }))}
+                          type="radio"
+                          name="installationDirection"
+                          value="vertical"
+                          checked={
+                            laminateConfig.installationDirection === "vertical"
+                          }
+                          onChange={(e) =>
+                            setLaminateConfig((prev) => ({
+                              ...prev,
+                              installationDirection: e.target.value as
+                                | "horizontal"
+                                | "vertical",
+                            }))
+                          }
                         />
                         <span>Vertical (paralelo ao comprimento)</span>
                       </label>
                     </div>
                   </div>
+
+                  <div className="setting-group">
+                    <div className="slider-label">
+                      <span>Direção de Início</span>
+                    </div>
+                    <div className="radio-group">
+                      <label className="radio-label">
+                        <input
+                          type="radio"
+                          name="startDirection"
+                          value="top-to-bottom"
+                          checked={
+                            laminateConfig.startDirection === "top-to-bottom"
+                          }
+                          onChange={(e) =>
+                            setLaminateConfig((prev) => ({
+                              ...prev,
+                              startDirection: e.target.value as
+                                | "top-to-bottom"
+                                | "bottom-to-top",
+                            }))
+                          }
+                        />
+                        <span>De cima para baixo</span>
+                      </label>
+                      <label className="radio-label">
+                        <input
+                          type="radio"
+                          name="startDirection"
+                          value="bottom-to-top"
+                          checked={
+                            laminateConfig.startDirection === "bottom-to-top"
+                          }
+                          onChange={(e) =>
+                            setLaminateConfig((prev) => ({
+                              ...prev,
+                              startDirection: e.target.value as
+                                | "top-to-bottom"
+                                | "bottom-to-top",
+                            }))
+                          }
+                        />
+                        <span>De baixo para cima</span>
+                      </label>
+                    </div>
+                    <div className="info-text">
+                      Escolha se quer começar a instalação de cima para baixo ou
+                      de baixo para cima. Isso afeta onde ficam as sobras de
+                      corte.
+                    </div>
+                  </div>
                 </div>
 
-                <div className='laminate-stats'>
+                <div className="laminate-stats">
                   <h3>📊 Estatísticas do Layout</h3>
-                  <div className='stats-grid'>
-                    <div className='stat-item'>
-                      <span className='stat-label'>Total de Peças:</span>
-                      <span className='stat-value'>{laminateLayout.length}</span>
+                  <div className="stats-grid">
+                    <div className="stat-item">
+                      <span className="stat-label">Total de Peças:</span>
+                      <span className="stat-value">
+                        {laminateLayout.length}
+                      </span>
                     </div>
-                    <div className='stat-item'>
-                      <span className='stat-label'>Peças Cortadas:</span>
-                      <span className='stat-value'>{laminateLayout.filter(p => p.isCut).length}</span>
+                    <div className="stat-item">
+                      <span className="stat-label">Peças Cortadas:</span>
+                      <span className="stat-value">
+                        {laminateLayout.filter((p) => p.isCut).length}
+                      </span>
                     </div>
-                    <div className='stat-item'>
-                      <span className='stat-label'>Área Total (m²):</span>
-                      <span className='stat-value'>
-                        {laminateLayout.reduce((sum, p) => sum + (p.length * p.width), 0).toFixed(2)}
+                    <div className="stat-item">
+                      <span className="stat-label">Área Total (m²):</span>
+                      <span className="stat-value">
+                        {laminateLayout
+                          .reduce((sum, p) => sum + p.length * p.width, 0)
+                          .toFixed(2)}
                       </span>
                     </div>
                   </div>
@@ -1097,8 +1448,6 @@ export default function PlantaInterativa(): JSX.Element {
             </div>
           </aside>
         )}
-
-       
       </main>
     </div>
   );
